@@ -1,0 +1,320 @@
+#
+# GENERATED CODE. DON'T MODIFY THIS FILE !!!
+#
+from airflow import DAG
+from airflow.models import Variable
+from airflow.operators.python import PythonOperator
+{% if l1_config.dataproc_collection_list %}
+from airflow.providers.google.cloud.operators.dataproc import \
+    DataprocSubmitJobOperator
+{% endif %}
+{% if l2_config.tables|length > 0 %}
+from airflow.providers.google.cloud.operators.bigquery import \
+    BigQueryExecuteQueryOperator
+{% endif %}
+{% if l1_config.dwh_sensors %}
+from airflow.sensors.external_task import ExternalTaskSensor
+{% endif %}
+from datetime import datetime, timedelta
+from dags.python_scripts.airflow_callback import callback
+from dags.python_scripts.helper import invoke_cloud_functions
+from string import Template
+from airflow.operators.empty import EmptyOperator
+
+{% macro schedule_interval(config) %}
+{% if config.dwh_schedule %}
+{% if config.dwh_schedule == 'None' %}
+{{ config.dwh_schedule }}{% else %}
+{{ "'" + config.dwh_schedule + "'"}}{% endif %}
+{% elif config._schedule %}
+{% if config._schedule == 'None' %}
+{{ config.dwh_schedule }}{% else %}
+{{ "'" + config._schedule + "'"}}{% endif %}
+{% else %}
+'0 17 * * *'{% endif %}
+{% endmacro %}
+# Airflow Config
+default_args = {
+    'owner': 'data@alodokter.com',
+    'depends_on_past': False,
+    'start_date': datetime(2020, 12, 31, 17),
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'email': [],
+    'retries': 5,
+    'retry_delay': timedelta(seconds=300),
+    'on_failure_callback': callback
+}
+
+dag_id = "{{ dag_id }}"
+dag = DAG(
+    dag_id,
+    default_args=default_args,
+    schedule_interval={{ schedule_interval(l1_config) }},
+    catchup=False,
+    concurrency=50,
+    max_active_runs=1
+)
+
+execution_location = Variable.get('ALO_EXECUTION_LOCATION')
+target_project_id = Variable.get('ALO_TARGET_PROJECT_ID')
+start_date_iso = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").start_of("day")'
+    '.in_timezone("UTC").isoformat() }}'
+{% endraw %}
+)
+end_date_iso = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").add(days=1).start_of("day")'
+    '.in_timezone("UTC").isoformat() }}'
+{% endraw %}
+)
+run_date_ds = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").add(days=1).start_of("day")'
+    '.in_timezone("UTC").date() }}'
+{% endraw %}
+)
+run_date_ds_nodash = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").add(days=1).start_of("day")'
+    '.in_timezone("UTC").date().format("YYYYMMDD") }}'
+{% endraw %}
+)
+run_date_ds_historical = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").start_of("day")'
+    '.in_timezone("UTC").date() }}'
+{% endraw %}
+)
+run_date_ds_nodash_historical = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").start_of("day")'
+    '.in_timezone("UTC").date().format("YYYYMMDD") }}'
+{% endraw %}
+)
+{% if l1_config.dwh_publish_status %}
+execution_date_iso = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("UTC").isoformat() }}'
+{% endraw %}
+)
+{% endif %}
+
+task_finish_ingestion = EmptyOperator(
+    task_id='ingestion_finished',
+    dag=dag,
+)
+
+{% if l1_config.dwh_sensors %}
+sensor_ingestion = EmptyOperator(
+    task_id='sensor_ingestion',
+    dag=dag,
+)
+{% for sensor in l1_config.dwh_sensors %}
+sensor_{{ sensor.name }} = ExternalTaskSensor(
+    task_id='sensor_{{ sensor.name }}',
+    dag=dag,
+    external_dag_id='{{ sensor.external_dag_id }}',
+    external_task_id='{{ sensor.external_task_id }}',
+    poke_interval=300, # poke (and reschedule) every 5 minutes
+    timeout={{ sensor.timeout if sensor.timeout else 82800 }}, # for daily dag run, set timeout to 23 hours, hourly -> 50 minutes
+    mode="reschedule", # use reschedule mode, don't block the slot for a long time
+)
+sensor_{{ sensor.name }} >> sensor_ingestion
+
+{% endfor %}
+{% macro dag_sensors(table, config)%}
+sensor_{{table}} = ExternalTaskSensor(
+    task_id='sensor_{{table}}',
+    dag=dag,
+    external_dag_id='{{ config.external_dag_id }}',
+    external_task_id='{{ config.external_task_id }}',
+    poke_interval=300, # poke (and reschedule) every 5 minutes
+    timeout={{ config.timeout if config.timeout else 82800 }}, # for daily dag run, set timeout to 23 hours, hourly -> 50 minutes
+    mode="reschedule", # use reschedule mode, don't block the slot for a long time
+)
+sensor_{{ table }} >> sensor_ingestion
+{% endmacro %}
+{% endif %}
+{% macro l3_task(table, config) %}
+target_table = f"{target_project_id}.{{ l3_config.dataset }}" \
+               f".{{ table }}"
+op = BigQueryExecuteQueryOperator(
+    task_id='l3_{{ table }}',
+    sql='sql/{{ l3_config.dataset }}.{{ table }}.sql',
+    {% if table[:4] != "scd_" %}
+    {% if config.is_truncate == 1 %}
+    destination_dataset_table=f'{target_table}',
+    {% else %}
+    {% if config.is_historical %}
+    destination_dataset_table=f'{target_table}${run_date_ds_nodash_historical}',
+    {% else %}
+    destination_dataset_table=f'{target_table}${run_date_ds_nodash}',
+    {% endif %}
+    {% endif %}
+    write_disposition='WRITE_TRUNCATE',
+    allow_large_results=True,
+    {% if config.is_truncate == 1 %}
+    {% else %}
+    schema_update_options=['ALLOW_FIELD_ADDITION'],
+    {% endif %}
+    {% endif %}
+    query_params=[
+        {
+            'name': 'start_date',
+            'parameterType': {'type': 'DATE'},
+            {% if table[:4] == "dim_" %}
+            'parameterValue': {'value': '1970-01-01'}
+            {% else %}
+            'parameterValue': {'value': {{ "run_date_ds_historical" if config.is_historical else "run_date_ds"}}}
+            {% endif %}
+        },
+        {
+            'name': 'end_date',
+            'parameterType': {'type': 'DATE'},
+            'parameterValue': {'value': {{ "run_date_ds_historical" if config.is_historical else "run_date_ds"}}}
+        }
+    ],
+    use_legacy_sql=False,
+    {% if table[:4] != "scd_" %}
+    time_partitioning={
+        'type': 'DAY',
+        'field': '{{ config.part if table[:5] == "fact_" else "snapshot_date" }}'
+    },
+    {% endif %}
+    {% if config.cluster_fields and table[:5] == "fact_"%}
+    cluster_fields = [{%for fields in config.cluster_fields %} "{{fields}}"{% if not loop.last %}, {% endif %}{% endfor %}],
+    {% endif %}
+    location=execution_location,
+    params={
+        'project_id': target_project_id
+    },
+    dag=dag
+)
+l3_{{table}}_op = op
+{% if l1_config.dwh_sensors %}
+sensor_ingestion \
+    >> l3_{{table}}_op
+{% endif %}
+{% for source_table in config.sources %}
+{% if ('dim_' in source_table) or ('fact_' in source_table) or ('scd_' in source_table)%}
+l3_{{source_table}}_op \
+    >> l3_{{table}}_op
+{% endif %}
+{% endfor %}
+{% endmacro %}
+{% macro l4_task(table, config) %}
+{% if config.dataset %}
+target_table = f"{target_project_id}.l4_{{ config.dataset }}" \
+               f".{{ table }}"
+{% else %}
+target_table = f"{target_project_id}.{{ l4_config.dataset }}" \
+               f".{{ table }}"
+{% endif %}
+op = BigQueryExecuteQueryOperator(
+    task_id='l4_{{ table }}',
+    {% if config.dataset %}
+    sql='sql/l4_{{ config.dataset }}.{{ table }}.sql',
+    {% else %}
+    sql='sql/{{ l4_config.dataset }}.{{ table }}.sql',
+    {% endif %}
+    {% if config.is_truncate == 1 %}
+    destination_dataset_table=f'{target_table}',
+    {% else %}
+    {% if config.is_historical %}
+    destination_dataset_table=f'{target_table}${run_date_ds_nodash_historical}',
+    {% else %}
+    destination_dataset_table=f'{target_table}${run_date_ds_nodash}',
+    {% endif %}
+    {% endif %}
+    write_disposition='WRITE_TRUNCATE',
+    allow_large_results=True,
+    {% if config.is_truncate == 1 %}
+    {% else %}
+    schema_update_options=['ALLOW_FIELD_ADDITION'],
+    {% endif %}
+    query_params=[
+        {
+            'name': 'start_date',
+            'parameterType': {'type': 'DATE'},
+            'parameterValue': {'value': {{ "run_date_ds_historical" if config.is_historical else "run_date_ds"}}}
+        },
+        {
+            'name': 'end_date',
+            'parameterType': {'type': 'DATE'},
+            'parameterValue': {'value': {{ "run_date_ds_historical" if config.is_historical else "run_date_ds"}}}
+        }
+    ],
+    use_legacy_sql=False,
+    time_partitioning={
+        'type': 'DAY',
+        'field': '{{ config.part }}'
+    },
+    {% if config.cluster_fields %} 
+    cluster_fields = [{%for fields in config.cluster_fields %} "{{fields}}"{% if not loop.last %}, {% endif %}{% endfor %}],
+    {% endif %}
+    location=execution_location,
+    params={
+        'project_id': target_project_id
+    },
+    dag=dag
+)
+l4_{{table}}_op = op
+l4_{{table}}_op >> task_finish_ingestion
+{% if config.sources %}
+{% for source_table, config in config.sources.items() %}
+{% if 'flat' in source_table %}
+l4_{{source_table}}_op \
+    >> l4_{{table}}_op
+{% else %}
+l4_{{source_table}}_op \
+    >> l4_{{table}}_op
+{% endif %}
+{% endfor %}
+{% else %}
+sensor_ingestion \
+    >> l4_{{table}}_op
+{% endif %}
+{% endmacro %}
+{% macro publish_status_task() %}
+publish_ingestion_status_op = PythonOperator(
+    task_id='publish_ingestion_status',
+    python_callable=invoke_cloud_functions,
+    op_kwargs={% raw %}{
+        "data": {
+            "project_id" : "{{ var.value.ALO_PROJECT_ID }}", 
+            "topic_id" : "{{ var.value.ALO_INGESTION_STATUS_PUBSUB_TOPIC }}", 
+            "dag_id" : dag_id, 
+            "execution_date" : execution_date_iso
+        },
+        "url": "{{ var.value.ALO_PUBSUB_CF_INVOKE_URL }}"
+    }{% endraw %},
+    provide_context=True,
+    dag=dag
+)
+task_finish_ingestion >> publish_ingestion_status_op
+{% endmacro %}
+{% for type, config in l3_config.tables.items() %}
+    {% for table, config in config.items() %}
+        {% if type == 'dimensions' or type == 'facts' or type == 'scd' %}
+{{ l4_task(table, config) }}
+        {% elif type == 'dwh_sensors' %}
+{{ dag_sensors(table, config)}}
+        {% endif %}
+    {% endfor %}
+{% endfor %}
+{% for type, config in l4_config.tables.items() %}
+    {% for table, config in config.items() %}
+        {% if type == 'flat_tables' %}
+{{ l4_task(table, config) }}
+        {% elif type == 'dwh_sensors' %}
+{{ dag_sensors(table, config)}}
+        {% endif %}
+    {% endfor %}
+{% endfor %}
+{% if l1_config.dwh_publish_status %}
+{{ publish_status_task() }}
+{% endif %}
+{{ "# End of DAG\n" }}

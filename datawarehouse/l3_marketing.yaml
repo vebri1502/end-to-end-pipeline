@@ -1,0 +1,19 @@
+
+scd:
+  # marketing
+  scd_activities:
+    dataset: marketing
+    sources: 
+      - activities
+    cluster_fields:
+      - status
+
+facts:
+  fact_activities:
+    dataset: marketing
+    sources: 
+      - activities
+    part: created_at
+    is_truncate: 1
+    cluster_fields:
+      - status

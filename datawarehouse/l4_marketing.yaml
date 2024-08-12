@@ -1,0 +1,8 @@
+flat_tables:
+  flat_activities:
+    sources:
+      fact_activities:
+    part: created_at_wib
+    is_truncate: 1
+    cluster_fields:
+      - status

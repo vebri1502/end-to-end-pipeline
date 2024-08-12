@@ -1,0 +1,57 @@
+activities:
+  fields:
+    _id:
+      type: $oid
+    _type:
+      type: string
+    comment:
+      type: string
+    created_at:
+      type: $date
+    errors:
+      fields:
+        lead_id:
+          type: $oid
+        user_id:
+          type: $oid
+        comment:
+          type: string
+        is_deleted:
+          type: boolean
+        is_read:
+          type: boolean
+        field_name:
+          type: string
+        old_value:
+          type: string
+        new_value:
+          type: string
+        created_at:
+          type: $date
+        updated_at:
+          type: $date
+        validation_context:
+          type: string
+      type: struct
+    field_name:
+      type: string
+    is_deleted:
+      type: boolean
+    is_read:
+      type: boolean
+    job_id:
+      type: string
+    lead_id:
+      type: $oid
+    new_value:
+      type: string
+    old_value:
+      type: string
+    reminder_datetime:
+      type: $date
+    updated_at:
+      type: $date
+    user_id:
+      type: $oid
+    validation_context:
+      type: string

@@ -1,0 +1,699 @@
+#
+# GENERATED CODE. DON'T MODIFY THIS FILE !!!
+#
+from airflow import DAG
+from airflow.models import Variable
+from airflow.operators.python import PythonOperator
+{% if l2_config.tables|length > 0 %}
+from airflow.providers.google.cloud.operators.bigquery import \
+    BigQueryExecuteQueryOperator
+{% endif %}
+{% if l1_config.have_sensor %}
+from airflow.sensors.external_task import ExternalTaskSensor
+{% endif %}
+from airflow.utils.task_group import TaskGroup
+from datetime import datetime, timedelta
+from dags.python_scripts.airflow_callback import callback
+from dags.python_scripts.helper import invoke_cloud_functions
+from string import Template
+from airflow.operators.empty import EmptyOperator
+{% if l1_config.dag_triggers is defined and l1_config.dag_triggers|length %}
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+{% endif %}
+
+# Airflow Config
+default_args = {
+    'owner': 'data@alodokter.com',
+    'depends_on_past': False,
+    'start_date': datetime(2020, 12, 31, 17),
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'email': [],
+    'retries': 5,
+    'retry_delay': timedelta(seconds=300),
+    'on_failure_callback': callback
+}
+
+execution_project_id = Variable.get('ALO_EXECUTION_PROJECT_ID')
+execution_location = Variable.get('ALO_EXECUTION_LOCATION')
+cf_name = Variable.get('ALO_INGEST_CF_NAME')
+invoke_url = f"https://{execution_location}-{execution_project_id}.cloudfunctions.net/{cf_name}"
+{% if l1_config.dataproc_collection_list %}
+cf_name_alt = Variable.get('ALO_INGEST_ALT_CF_NAME')
+invoke_url_alt = f"https://{execution_location}-{execution_project_id}.cloudfunctions.net/{cf_name_alt}"
+{% endif %}
+secret = {
+    'project_id': Variable.get('ALO_{{ source.upper() }}_SECRET_PROJECT_ID'),
+    'name': Variable.get('ALO_{{ source.upper() }}_SECRET_NAME'),
+    'version': Variable.get('ALO_{{ source.upper() }}_SECRET_VERSION'),
+}
+decrypt_secret = {
+    'project_id': Variable.get('ALO_DECRYPTION_SECRET_PROJECT_ID'),
+    'name': Variable.get('ALO_DECRYPTION_SECRET_NAME'),
+    'version': Variable.get('ALO_DECRYPTION_SECRET_VERSION'),
+}
+target_project_id = Variable.get('ALO_TARGET_PROJECT_ID')
+decryption_url = Variable.get('ALO_DECRYPTION_URL')
+start_date_iso = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").start_of("day")'
+    '.in_timezone("UTC").isoformat() }}'
+{% endraw %}
+)
+end_date_iso = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").add(days=1).start_of("day")'
+    '.in_timezone("UTC").isoformat() }}'
+{% endraw %}
+)
+run_date_ds = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").add(days=1).start_of("day")'
+    '.in_timezone("UTC").date() }}'
+{% endraw %}
+)
+run_date_ds_nodash = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("Asia/Jakarta").add(days=1).start_of("day")'
+    '.in_timezone("UTC").date().format("YYYYMMDD") }}'
+{% endraw %}
+)
+{% if (l1_config.dag_triggers is defined and l1_config.dag_triggers|length) or l1_config.publish_status %}
+execution_date_iso = ({% raw %}
+    '{{ execution_date'
+    '.in_timezone("UTC").isoformat() }}'
+{% endraw %}
+)
+{% endif %}
+
+dag_id = "ingest_{{ source }}"
+with DAG(
+    dag_id,
+    default_args=default_args,
+    schedule_interval='{{ l1_config._schedule if l1_config._schedule else "0 17 * * *" }}',
+    catchup=False,
+    concurrency=50,
+    max_active_runs=1
+    ) as dag:
+
+    task_finish_ingestion = EmptyOperator(
+        task_id='ingestion_finished',
+        dag=dag,
+    )
+{% macro ingestion_task(collection, dataset, config) %}
+    with TaskGroup(group_id='{{ collection }}') as task_group:
+        table_name = "{{ collection }}"
+        target_table = f"{target_project_id}.{{ l1_config.dataset }}.{table_name}"
+        ingest_{{collection}}_op = PythonOperator(
+            task_id='ingest_{{ collection }}',
+            python_callable=invoke_cloud_functions,
+            op_kwargs={
+                "data": {
+                    'project_id': secret['project_id'],
+                    'secret': secret['name'],
+                    'version': secret['version'],
+                    'db': "{{ l1_config.db }}",
+                    'collection': "{{ collection }}",
+                    'rundt': run_date_ds,
+                    'mongo_filter': {
+                        'start_date': start_date_iso,
+                        'end_date': end_date_iso
+                    },
+                    'target_table': target_table
+                },
+                "url": invoke_url
+            },
+            provide_context=True,
+            dag=dag
+        )
+
+        table_name = "{{ collection }}"
+        target_table = f"{target_project_id}.l2_{{ dataset }}.{table_name}"
+        op = BigQueryExecuteQueryOperator(
+            task_id='l2_{{ collection }}',
+            sql='sql/l2_{{ dataset }}.{{ collection }}.sql',
+            destination_dataset_table=f'{target_table}${run_date_ds_nodash}',
+            write_disposition='WRITE_TRUNCATE',
+            allow_large_results=True,
+            schema_update_options=['ALLOW_FIELD_ADDITION'],
+            query_params=[
+                {
+                    'name': 'start_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                },
+                {
+                    'name': 'end_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                }
+            ],
+            use_legacy_sql=False,
+            time_partitioning={
+                'type': 'DAY',
+                'field': 'run_date'
+            },
+            location=execution_location,
+            params={
+                'project_id': target_project_id
+            },
+            dag=dag
+        )
+        l2_{{collection}}_op = op
+
+        ingest_{{collection}}_op \
+            >> l2_{{collection}}_op
+
+        table_name = "{{ collection }}"
+        target_table = f"{target_project_id}.l2_{{ dataset }}.{table_name}"
+        op = BigQueryExecuteQueryOperator(
+            task_id='l2_{{ collection }}',
+            sql='sql/l2_{{ dataset }}.{{ collection }}.sql',
+            destination_dataset_table=f'{target_table}${run_date_ds_nodash}',
+            write_disposition='WRITE_TRUNCATE',
+            allow_large_results=True,
+            schema_update_options=['ALLOW_FIELD_ADDITION'],
+            query_params=[
+                {
+                    'name': 'start_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                },
+                {
+                    'name': 'end_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                }
+            ],
+            use_legacy_sql=False,
+            time_partitioning={
+                'type': 'DAY',
+                'field': 'run_date'
+            },
+            location=execution_location,
+            params={
+                'project_id': target_project_id
+            },
+            dag=dag
+        )
+        l2_{{collection}}_op = op
+        l2_{{collection}}_op >> task_finish_ingestion
+
+        {% if not config.fields %}
+        l2_{{collection}}_op \
+            >> l2_{{collection}}_op
+        {% endif %}
+        
+        {% if config.fields %}
+        list_subdags = []
+        with TaskGroup(group_id='decryption') as decryption:
+            {% for field in config.fields %}
+            {% if config.fields[field].type == 'array' %}
+            {% set item = config.fields[field].item %}
+            table_name = "{{ collection }}"
+            {% for item_name, item_field in item.fields.items() %}
+            {% if item_field.type %}
+            field_name = "{{ field }}_array_{{ item_name }}"
+            target_table = f"{{ l2_config.dataset }}.l2_{table_name}_{field_name}_mapping"
+            decrypt_{{ collection }}_{{ field }}_array_{{ item_name }} = \
+                PythonOperator(
+                    task_id=f'decrypt_{table_name}_{field_name}',
+                    python_callable=invoke_cloud_functions,
+                    op_kwargs={
+                        "data": {
+                            "source_project": target_project_id,
+                            "source_table": f"l2_{{ source }}.{table_name}",
+                            "source_field": f"{field_name}",
+                            "secret_project": decrypt_secret['project_id'],
+                            "secret_name": decrypt_secret['name'],
+                            "secret_version": decrypt_secret['version'],
+                            "decryption_source": "{{ decryption_source }}",
+                            "target_project": target_project_id,
+                            "target_table": target_table,
+                            "target_partition": run_date_ds_nodash,
+                            "source_partition": {
+                                "field": "run_date",
+                                "start_date": run_date_ds,
+                                "end_date": run_date_ds
+                            },
+                            "type": "ARRAY"
+                        },
+                        "url": decryption_url
+                    },
+                    provide_context=True,
+                    dag=dag
+                )
+            {% endif %}
+            {% endfor %}
+            {% else %}
+            table_name = "{{ collection }}"
+            field_name = "{{ field }}"
+            target_table = f"{{ l2_config.dataset }}.l2_{table_name}_{field_name}_mapping"
+            decrypt_{{ collection }}_{{ field }} = PythonOperator(
+                task_id=f'decrypt_{table_name}_{field_name}',
+                python_callable=invoke_cloud_functions,
+                op_kwargs={
+                    "data": {
+                        "source_project": target_project_id,
+                        "source_table": f"l2_{{ source }}.{table_name}",
+                        "source_field": f"{field_name}",
+                        "secret_project": decrypt_secret['project_id'],
+                        "secret_name": decrypt_secret['name'],
+                        "secret_version": decrypt_secret['version'],
+                        "decryption_source": "{{ decryption_source }}",
+                        "target_project": target_project_id,
+                        "target_table": target_table,
+                        "target_partition": run_date_ds_nodash,
+                        "source_partition": {
+                            "field": "run_date",
+                            "start_date": run_date_ds,
+                            "end_date": run_date_ds
+                        }
+                    },
+                    "url": decryption_url
+                },
+                provide_context=True,
+                dag=dag
+            )
+            {% endif %}
+            {% endfor %}
+        list_subdags.append(decryption)
+        l2_{{ collection }}_op >> decryption >> l2_{{ collection }}_op
+        {% endif %}
+{% endmacro %}
+
+{% macro dataproc_ingestion_task(collection, dataset, config_dataproc, config) %}
+    with TaskGroup(group_id='{{ collection }}') as task_group:
+        table_name = "{{ collection }}"
+        target_table = f"{target_project_id}.{{ l1_config.dataset }}.{table_name}"
+        ingest_{{collection}}_op = PythonOperator(
+            task_id='ingest_{{ collection }}',
+            python_callable=invoke_cloud_functions,
+            op_kwargs={
+                "data": {
+                    'project_id': secret['project_id'],
+                    'secret': secret['name'],
+                    'version': secret['version'],
+                    'db': "{{ l1_config.db }}",
+                    'collection': "{{ collection }}",
+                    'rundt': run_date_ds,
+                    'mongo_filter': {
+                        'start_date': start_date_iso,
+                        'end_date': end_date_iso
+                    },
+                    'target_table': target_table
+                },
+                "url": invoke_url_alt
+            },
+            provide_context=True,
+            dag=dag
+        )
+
+        table_name = "{{ collection }}"
+        target_table = f"{target_project_id}.l2_{{ dataset }}.{table_name}"
+        op = BigQueryExecuteQueryOperator(
+            task_id='l2_{{ collection }}',
+            sql='sql/l2_{{ dataset }}.{{ collection }}.sql',
+            destination_dataset_table=f'{target_table}${run_date_ds_nodash}',
+            write_disposition='WRITE_TRUNCATE',
+            allow_large_results=True,
+            schema_update_options=['ALLOW_FIELD_ADDITION'],
+            query_params=[
+                {
+                    'name': 'start_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                },
+                {
+                    'name': 'end_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                }
+            ],
+            use_legacy_sql=False,
+            time_partitioning={
+                'type': 'DAY',
+                'field': 'run_date'
+            },
+            location=execution_location,
+            params={
+                'project_id': target_project_id
+            },
+            dag=dag
+        )
+        l2_{{collection}}_op = op
+
+        ingest_{{collection}}_op \
+            >> l2_{{collection}}_op
+
+        table_name = "{{ collection }}"
+        target_table = f"{target_project_id}.l2_{{ dataset }}.{table_name}"
+        op = BigQueryExecuteQueryOperator(
+            task_id='l2_{{ collection }}',
+            sql='sql/l2_{{ dataset }}.{{ collection }}.sql',
+            destination_dataset_table=f'{target_table}${run_date_ds_nodash}',
+            write_disposition='WRITE_TRUNCATE',
+            allow_large_results=True,
+            schema_update_options=['ALLOW_FIELD_ADDITION'],
+            query_params=[
+                {
+                    'name': 'start_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                },
+                {
+                    'name': 'end_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                }
+            ],
+            use_legacy_sql=False,
+            time_partitioning={
+                'type': 'DAY',
+                'field': 'run_date'
+            },
+            location=execution_location,
+            params={
+                'project_id': target_project_id
+            },
+            dag=dag
+        )
+        l2_{{collection}}_op = op
+        l2_{{collection}}_op >> task_finish_ingestion
+        
+        {% if not config.fields %}
+        l2_{{collection}}_op \
+            >> l2_{{collection}}_op
+        {% endif %}
+
+        {% if config.fields %}
+        list_subdags = []
+        with TaskGroup(group_id='decryption') as decryption:
+            {% for field in config.fields %}
+            {% if config.fields[field].type == 'array' %}
+            {% set item = config.fields[field].item %}
+            table_name = "{{ collection }}"
+            {% for item_name, item_field in item.fields.items() %}
+            {% if item_field.type %}
+            field_name = "{{ field }}_array_{{ item_name }}"
+            target_table = f"{{ l2_config.dataset }}.l2_{table_name}_{field_name}_mapping"
+            decrypt_{{ collection }}_{{ field }}_array_{{ item_name }} = \
+                PythonOperator(
+                    task_id=f'decrypt_{table_name}_{field_name}',
+                    python_callable=invoke_cloud_functions,
+                    op_kwargs={
+                        "data": {
+                            "source_project": target_project_id,
+                            "source_table": f"l2_{{ source }}.{table_name}",
+                            "source_field": f"{field_name}",
+                            "secret_project": decrypt_secret['project_id'],
+                            "secret_name": decrypt_secret['name'],
+                            "secret_version": decrypt_secret['version'],
+                            "decryption_source": "{{ decryption_source }}",
+                            "target_project": target_project_id,
+                            "target_table": target_table,
+                            "target_partition": run_date_ds_nodash,
+                            "source_partition": {
+                                "field": "run_date",
+                                "start_date": run_date_ds,
+                                "end_date": run_date_ds
+                            },
+                            "type": "ARRAY"
+                        },
+                        "url": decryption_url
+                    },
+                    provide_context=True,
+                    dag=dag
+                )
+            {% endif %}
+            {% endfor %}
+            {% else %}
+            table_name = "{{ collection }}"
+            field_name = "{{ field }}"
+            target_table = f"{{ l2_config.dataset }}.l2_{table_name}_{field_name}_mapping"
+            decrypt_{{ collection }}_{{ field }} = PythonOperator(
+                task_id=f'decrypt_{table_name}_{field_name}',
+                python_callable=invoke_cloud_functions,
+                op_kwargs={
+                    "data": {
+                        "source_project": target_project_id,
+                        "source_table": f"l2_{{ source }}.{table_name}",
+                        "source_field": f"{field_name}",
+                        "secret_project": decrypt_secret['project_id'],
+                        "secret_name": decrypt_secret['name'],
+                        "secret_version": decrypt_secret['version'],
+                        "decryption_source": "{{ decryption_source }}",
+                        "target_project": target_project_id,
+                        "target_table": target_table,
+                        "target_partition": run_date_ds_nodash,
+                        "source_partition": {
+                            "field": "run_date",
+                            "start_date": run_date_ds,
+                            "end_date": run_date_ds
+                        }
+                    },
+                    "url": decryption_url
+                },
+                provide_context=True,
+                dag=dag
+            )
+            {% endif %}
+            {% endfor %}
+        list_subdags.append(decryption)
+        l2_{{ collection }}_op >> decryption >> l2_{{ collection }}_op
+        {% endif %}
+{% endmacro %}
+{% macro projection_task(collection, dataset, projection, config) %}
+    with TaskGroup(group_id='{{ collection }}') as task_group:
+        table_name = "{{ collection }}"
+        target_table = f"{target_project_id}.{{ l1_config.dataset }}.{table_name}"
+        ingest_{{collection}}_op = PythonOperator(
+            task_id='ingest_{{ collection }}',
+            python_callable=invoke_cloud_functions,
+            op_kwargs={
+                "data": {
+                    'project_id': secret['project_id'],
+                    'secret': secret['name'],
+                    'version': secret['version'],
+                    'db': "{{ l1_config.db }}",
+                    'collection': "{{ collection }}",
+                    'rundt': run_date_ds,
+                    'mongo_filter': {
+                        'start_date': start_date_iso,
+                        'end_date': end_date_iso
+                    },
+                    'target_table': target_table,
+                    'projection': {
+                        {% for field, is_exclude in projection.items() %}
+                        '{{ field }}': {{ is_exclude }}{{ '' if loop.last else ',' }}
+                        {% endfor %}
+                    }
+                },
+                "url": invoke_url
+            },
+            provide_context=True,
+            dag=dag
+        )
+
+        table_name = "{{ collection }}"
+        target_table = f"{target_project_id}.l2_{{ dataset }}.{table_name}"
+        op = BigQueryExecuteQueryOperator(
+            task_id='l2_{{ collection }}',
+            sql='sql/l2_{{ dataset }}.{{ collection }}.sql',
+            destination_dataset_table=f'{target_table}${run_date_ds_nodash}',
+            write_disposition='WRITE_TRUNCATE',
+            allow_large_results=True,
+            schema_update_options=['ALLOW_FIELD_ADDITION'],
+            query_params=[
+                {
+                    'name': 'start_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                },
+                {
+                    'name': 'end_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                }
+            ],
+            use_legacy_sql=False,
+            time_partitioning={
+                'type': 'DAY',
+                'field': 'run_date'
+            },
+            location=execution_location,
+            params={
+                'project_id': target_project_id
+            },
+            dag=dag
+        )
+        l2_{{collection}}_op = op
+
+        ingest_{{collection}}_op \
+            >> l2_{{collection}}_op
+
+        table_name = "{{ collection }}"
+        target_table = f"{target_project_id}.l2_{{ dataset }}.{table_name}"
+        op = BigQueryExecuteQueryOperator(
+            task_id='l2_{{ collection }}',
+            sql='sql/l2_{{ dataset }}.{{ collection }}.sql',
+            destination_dataset_table=f'{target_table}${run_date_ds_nodash}',
+            write_disposition='WRITE_TRUNCATE',
+            allow_large_results=True,
+            schema_update_options=['ALLOW_FIELD_ADDITION'],
+            query_params=[
+                {
+                    'name': 'start_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                },
+                {
+                    'name': 'end_date',
+                    'parameterType': {'type': 'DATE'},
+                    'parameterValue': {'value': run_date_ds}
+                }
+            ],
+            use_legacy_sql=False,
+            time_partitioning={
+                'type': 'DAY',
+                'field': 'run_date'
+            },
+            location=execution_location,
+            params={
+                'project_id': target_project_id
+            },
+            dag=dag
+        )
+        l2_{{collection}}_op = op
+        l2_{{collection}}_op >> task_finish_ingestion
+        
+        {% if not config.fields %}
+        l2_{{collection}}_op \
+            >> l2_{{collection}}_op
+        {% endif %}
+
+        {% if config.fields %}
+        list_subdags = []
+        with TaskGroup(group_id='decryption') as decryption:
+            {% for field in config.fields %}
+            {% if config.fields[field].type == 'array' %}
+            {% set item = config.fields[field].item %}
+            table_name = "{{ collection }}"
+            {% for item_name, item_field in item.fields.items() %}
+            {% if item_field.type %}
+            field_name = "{{ field }}_array_{{ item_name }}"
+            target_table = f"{{ l2_config.dataset }}.l2_{table_name}_{field_name}_mapping"
+            decrypt_{{ collection }}_{{ field }}_array_{{ item_name }} = \
+                PythonOperator(
+                    task_id=f'decrypt_{table_name}_{field_name}',
+                    python_callable=invoke_cloud_functions,
+                    op_kwargs={
+                        "data": {
+                            "source_project": target_project_id,
+                            "source_table": f"l2_{{ source }}.{table_name}",
+                            "source_field": f"{field_name}",
+                            "secret_project": decrypt_secret['project_id'],
+                            "secret_name": decrypt_secret['name'],
+                            "secret_version": decrypt_secret['version'],
+                            "decryption_source": "{{ decryption_source }}",
+                            "target_project": target_project_id,
+                            "target_table": target_table,
+                            "target_partition": run_date_ds_nodash,
+                            "source_partition": {
+                                "field": "run_date",
+                                "start_date": run_date_ds,
+                                "end_date": run_date_ds
+                            },
+                            "type": "ARRAY"
+                        },
+                        "url": decryption_url
+                    },
+                    provide_context=True,
+                    dag=dag
+                )
+            {% endif %}
+            {% endfor %}
+            {% else %}
+            table_name = "{{ collection }}"
+            field_name = "{{ field }}"
+            target_table = f"{{ l2_config.dataset }}.l2_{table_name}_{field_name}_mapping"
+            decrypt_{{ collection }}_{{ field }} = PythonOperator(
+                task_id=f'decrypt_{table_name}_{field_name}',
+                python_callable=invoke_cloud_functions,
+                op_kwargs={
+                    "data": {
+                        "source_project": target_project_id,
+                        "source_table": f"l2_{{ source }}.{table_name}",
+                        "source_field": f"{field_name}",
+                        "secret_project": decrypt_secret['project_id'],
+                        "secret_name": decrypt_secret['name'],
+                        "secret_version": decrypt_secret['version'],
+                        "decryption_source": "{{ decryption_source }}",
+                        "target_project": target_project_id,
+                        "target_table": target_table,
+                        "target_partition": run_date_ds_nodash,
+                        "source_partition": {
+                            "field": "run_date",
+                            "start_date": run_date_ds,
+                            "end_date": run_date_ds
+                        }
+                    },
+                    "url": decryption_url
+                },
+                provide_context=True,
+                dag=dag
+            )
+            {% endif %}
+            {% endfor %}
+        list_subdags.append(decryption)
+        l2_{{ collection }}_op >> decryption >> l2_{{ collection }}_op
+        {% endif %}
+{% endmacro %}
+{% macro dag_trigger_task(trigger) %}
+    trigger_{{ trigger.name }} = TriggerDagRunOperator(
+        task_id='trigger_{{ trigger.name }}',
+        trigger_dag_id='{{ trigger.trigger_dag_id }}',
+        execution_date=execution_date_iso,
+        reset_dag_run=True,
+        dag=dag
+    )
+    task_finish_ingestion >> trigger_{{ trigger.name }}
+
+{% endmacro %}
+{% macro publish_status_task() %}
+    publish_ingestion_status_op = PythonOperator(
+        task_id='publish_ingestion_status',
+        python_callable=invoke_cloud_functions,
+        op_kwargs={% raw %}{
+            "data": {
+                "project_id" : "{{ var.value.ALO_PROJECT_ID }}", 
+                "topic_id" : "{{ var.value.ALO_INGESTION_STATUS_PUBSUB_TOPIC }}", 
+                "dag_id" : dag_id, 
+                "execution_date" : execution_date_iso
+            },
+            "url": "{{ var.value.ALO_PUBSUB_CF_INVOKE_URL }}"
+        }{% endraw %},
+        provide_context=True,
+        dag=dag
+    )
+    task_finish_ingestion >> publish_ingestion_status_op
+{% endmacro %}
+
+{% for collection in l1_config.collection_list %}
+{{ ingestion_task(collection, l1_config.dest_dataset, l2_config.tables[collection]) }}
+{% endfor %}
+{% for collection in l1_config.dataproc_collection_list %}
+{{ dataproc_ingestion_task(collection, l1_config.dest_dataset, l1_config.dataproc_collection_list[collection], l2_config.tables[collection]) }}
+{% endfor %}
+{% for collection in l1_config.projection %}
+{{ projection_task(collection, l1_config.dest_dataset, l1_config.projection[collection], l2_config.tables[collection]) | indent(2)}}
+{% endfor %}
+{% if l1_config.dag_triggers is defined and l1_config.dag_triggers|length %}
+{% for trigger in l1_config.dag_triggers %}
+{{ dag_trigger_task(trigger) }}
+{% endfor %}
+{% endif %}
+{% if l1_config.publish_status %}
+{{ publish_status_task() }}
+{% endif %}
+{{ "# End of DAG\n" }}

@@ -1,0 +1,2 @@
+SELECT *
+FROM activities

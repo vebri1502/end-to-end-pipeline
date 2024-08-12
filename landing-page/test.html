@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kopi Enak - Coffeeshop Terbaik</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="font-sans bg-amber-50">
+    <nav class="bg-gray-800">
+        <div class="mx-auto max-w-7xl px-2 sm:px-6 lg:px-8">
+          <div class="relative flex h-16 items-center justify-between">
+            <div class="absolute inset-y-0 left-0 flex items-center sm:hidden">
+              <!-- Mobile menu button-->
+              <button type="button" class="relative inline-flex items-center justify-center rounded-md p-2 text-gray-400 hover:bg-gray-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white" aria-controls="mobile-menu" aria-expanded="false">
+                <span class="absolute -inset-0.5"></span>
+                <span class="sr-only">Open main menu</span>
+                <!--
+                  Icon when menu is closed.
+      
+                  Menu open: "hidden", Menu closed: "block"
+                -->
+                <svg class="block h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                </svg>
+                <!--
+                  Icon when menu is open.
+      
+                  Menu open: "block", Menu closed: "hidden"
+                -->
+                <svg class="hidden h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div class="flex flex-1 items-center justify-center sm:items-stretch sm:justify-start">
+              <div class="flex flex-shrink-0 items-center">
+                <img class="h-8 w-auto" src="https://tailwindui.com/img/logos/mark.svg?color=indigo&shade=500" alt="Your Company">
+              </div>
+              <div class="hidden sm:ml-6 sm:block">
+                <div class="flex space-x-4">
+                  <!-- Current: "bg-gray-900 text-white", Default: "text-gray-300 hover:bg-gray-700 hover:text-white" -->
+                  <a href="#" class="rounded-md bg-gray-900 px-3 py-2 text-sm font-medium text-white" aria-current="page">Dashboard</a>
+                  <a href="#" class="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white">Team</a>
+                  <a href="#" class="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white">Projects</a>
+                  <a href="#" class="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white">Calendar</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      
+        <!-- Mobile menu, show/hide based on menu state. -->
+        <div class="sm:hidden" id="mobile-menu">
+          <div class="space-y-1 px-2 pb-3 pt-2">
+            <!-- Current: "bg-gray-900 text-white", Default: "text-gray-300 hover:bg-gray-700 hover:text-white" -->
+            <a href="#" class="block rounded-md bg-gray-900 px-3 py-2 text-base font-medium text-white" aria-current="page">Dashboard</a>
+            <a href="#" class="block rounded-md px-3 py-2 text-base font-medium text-gray-300 hover:bg-gray-700 hover:text-white">Team</a>
+            <a href="#" class="block rounded-md px-3 py-2 text-base font-medium text-gray-300 hover:bg-gray-700 hover:text-white">Projects</a>
+            <a href="#" class="block rounded-md px-3 py-2 text-base font-medium text-gray-300 hover:bg-gray-700 hover:text-white">Calendar</a>
+          </div>
+        </div>
+      </nav>
+
+    <main id="content" class="container mx-auto mt-8 p-4">
+        <!-- Content will be loaded here -->
+    </main>
+
+    <footer class="bg-brown-800 text-white p-4 mt-8">
+        <div class="container mx-auto text-center">
+            <p>&copy; 2024 Kopi Enak. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script>
+        const pages = {
+            home: `
+                <div class="text-center">
+                    <h1 class="text-4xl font-bold mb-4">Selamat Datang di Kopi Enak</h1>
+                    <p class="text-xl mb-8">Nikmati secangkir kebahagiaan di setiap seduhan</p>
+                    <img src="https://via.placeholder.com/800x400" alt="Kopi Enak Ambience" class="rounded-lg shadow-lg mx-auto">
+                </div>
+            `,
+            menu: `
+                <div>
+                    <h1 class="text-3xl font-bold mb-6 text-center">Menu Kami</h1>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="bg-white p-4 rounded-lg shadow">
+                            <h2 class="text-xl font-semibold mb-2">Espresso</h2>
+                            <p class="text-gray-600">Kopi hitam kental dengan cita rasa kuat</p>
+                            <p class="text-lg font-bold mt-2">Rp 20.000</p>
+                        </div>
+                        <div class="bg-white p-4 rounded-lg shadow">
+                            <h2 class="text-xl font-semibold mb-2">Cappuccino</h2>
+                            <p class="text-gray-600">Espresso dengan susu dan foam lembut</p>
+                            <p class="text-lg font-bold mt-2">Rp 25.000</p>
+                        </div>
+                        <div class="bg-white p-4 rounded-lg shadow">
+                            <h2 class="text-xl font-semibold mb-2">Latte</h2>
+                            <p class="text-gray-600">Espresso dengan susu steamed dan sedikit foam</p>
+                            <p class="text-lg font-bold mt-2">Rp 25.000</p>
+                        </div>
+                        <div class="bg-white p-4 rounded-lg shadow">
+                            <h2 class="text-xl font-semibold mb-2">Americano</h2>
+                            <p class="text-gray-600">Espresso dengan tambahan air panas</p>
+                            <p class="text-lg font-bold mt-2">Rp 22.000</p>
+                        </div>
+                    </div>
+                </div>
+            `,
+            about: `
+                <div class="max-w-2xl mx-auto text-center">
+                    <h1 class="text-3xl font-bold mb-6">Tentang Kopi Enak</h1>
+                    <img src="https://via.placeholder.com/600x300" alt="Kopi Enak Store" class="rounded-lg shadow-lg mb-6 mx-auto">
+                    <p class="text-lg mb-4">
+                        Kopi Enak didirikan pada tahun 2010 dengan visi menyajikan kopi berkualitas tinggi dalam suasana yang nyaman dan ramah.
+                    </p>
+                    <p class="text-lg mb-4">
+                        Kami berkomitmen untuk menggunakan biji kopi terbaik dari petani lokal dan menyeduhnya dengan teknik yang sempurna untuk menghasilkan secangkir kebahagiaan bagi setiap pelanggan kami.
+                    </p>
+                    <p class="text-lg">
+                        Kunjungi kami dan rasakan sendiri pengalaman menikmati kopi terbaik di kota!
+                    </p>
+                </div>
+            `,
+            contact: `
+                <div class="max-w-xl mx-auto">
+                    <h1 class="text-3xl font-bold mb-6 text-center">Hubungi Kami</h1>
+                    <form class="bg-white p-6 rounded-lg shadow-lg">
+                        <div class="mb-4">
+                            <label for="name" class="block text-gray-700 font-bold mb-2">Nama</label>
+                            <input type="text" id="name" name="name" class="w-full px-3 py-2 border rounded-lg" required>
+                        </div>
+                        <div class="mb-4">
+                            <label for="email" class="block text-gray-700 font-bold mb-2">Email</label>
+                            <input type="email" id="email" name="email" class="w-full px-3 py-2 border rounded-lg" required>
+                        </div>
+                        <div class="mb-4">
+                            <label for="message" class="block text-gray-700 font-bold mb-2">Pesan</label>
+                            <textarea id="message" name="message" rows="4" class="w-full px-3 py-2 border rounded-lg" required></textarea>
+                        </div>
+                        <button type="submit" class="bg-brown-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-brown-700">Kirim Pesan</button>
+                    </form>
+                </div>
+            `
+        };
+
+        function loadPage(page) {
+            const content = document.getElementById('content');
+            content.innerHTML = pages[page] || 'Halaman tidak ditemukan';
+        }
+
+        document.querySelectorAll('.nav-link').forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const page = e.target.dataset.page;
+                loadPage(page);
+            });
+        });
+
+        // Load home page by default
+        loadPage('home');
+    </script>
+</body>
+</html>
